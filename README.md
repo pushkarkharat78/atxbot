@@ -1,124 +1,113 @@
-import time
-import requests
 import pandas as pd
-import ta  # Technical analysis library
+import numpy as np
+import yfinance as yf
+import time
 
-# ==========================================
-# ⚙️ ATX BOT CONFIGURATION
-# ==========================================
-BOT_NAME = "ATX Bot"
-TELEGRAM_BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"  # Replace with token from @BotFather
-TELEGRAM_CHAT_ID = "YOUR_TELEGRAM_CHAT_ID"      # Channel or Group ID (e.g., -100xxxxxxxxxx)
+class RealTradingBot:
+    def __init__(self, ticker="USDBRL=X", initial_balance=100.0, payout_rate=0.85):
+        self.ticker = ticker
+        self.balance = initial_balance
+        self.initial_balance = initial_balance
+        self.payout_rate = payout_rate  # Standard binary payout (e.g., 85%)
+        self.trade_history = []
 
-# Locked Target Pair & Timeframe Configuration
-TARGET_PAIR = "USDBRL OTC"
-DEFAULT_EXPIRY = "1 Minute"
-DEFAULT_TIMEFRAME = "M1"
-
-
-# ==========================================
-# 📊 TECHNICAL ANALYSIS & SIGNAL LOGIC
-# ==========================================
-def analyze_market(ohlc_df: pd.DataFrame) -> dict:
-    """
-    Analyzes 1-minute OHLC market data for USDBRL OTC using RSI and EMA Crossover.
-    ohlc_df must contain columns: ['open', 'high', 'low', 'close']
-    """
-    # Calculate Indicators
-    ohlc_df['rsi'] = ta.momentum.rsi(ohlc_df['close'], window=14)
-    ohlc_df['ema_fast'] = ta.trend.ema_indicator(ohlc_df['close'], window=9)
-    ohlc_df['ema_slow'] = ta.trend.ema_indicator(ohlc_df['close'], window=21)
-
-    latest = ohlc_df.iloc[-1]
-    previous = ohlc_df.iloc[-2]
-
-    rsi_val = round(latest['rsi'], 2)
-    signal = "WAIT"
-
-    # CALL (BUY) Condition: Oversold RSI + Bullish EMA Crossover
-    if latest['rsi'] < 35 and previous['ema_fast'] <= previous['ema_slow'] and latest['ema_fast'] > latest['ema_slow']:
-        signal = "CALL 🟢"
-
-    # PUT (SELL) Condition: Overbought RSI + Bearish EMA Crossover
-    elif latest['rsi'] > 65 and previous['ema_fast'] >= previous['ema_slow'] and latest['ema_fast'] < latest['ema_slow']:
-        signal = "PUT 🔴"
-
-    return {
-        "signal": signal,
-        "rsi": rsi_val,
-        "price": latest['close']
-    }
-
-
-# ==========================================
-# 📨 TELEGRAM MESSAGE DISPATCHER
-# ==========================================
-def send_atx_signal(signal_data: dict):
-    """Formats and sends the signal message to Telegram."""
-    
-    if signal_data["signal"] == "WAIT":
-        print("[ATX Bot] Market condition neutral. Waiting for next candle...")
-        return
-
-    message = (
-        f"🤖 *{BOT_NAME} SIGNAL* 🤖\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"🔤 *Asset:* {TARGET_PAIR}\n"
-        f"📊 *Signal:* *{signal_data['signal']}*\n"
-        f"⏱️ *Expiry Time:* {DEFAULT_EXPIRY}\n"
-        f"📈 *Timeframe:* {DEFAULT_TIMEFRAME}\n"
-        f"📉 *Current RSI:* {signal_data['rsi']}\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"⚠️ Execute entry immediately at the start of the next candle."
-    )
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "Markdown"
-    }
-
-    try:
-        response = requests.post(url, json=payload)
-        if response.status_code == 200:
-            print(f"[ATX Bot] Signal sent successfully: {signal_data['signal']}")
-        else:
-            print(f"[ATX Bot] Telegram Error: {response.text}")
-    except Exception as e:
-        print(f"[ATX Bot] Network Exception: {e}")
-
-
-# ==========================================
-# 🚀 MAIN LOOP ENGINE
-# ==========================================
-def run_atx_bot():
-    print(f"🚀 {BOT_NAME} Started...")
-    print(f"🎯 Lock Target: {TARGET_PAIR} | Expiry: {DEFAULT_EXPIRY}")
-
-    while True:
-        try:
-            # Note: Fetch real-time USDBRL OTC candle data from your data feed/API
-            # Below is mock data structural format for representation
-            sample_ohlc_data = pd.DataFrame({
-                'open': [5.120, 5.121, 5.118, 5.115, 5.112],
-                'high': [5.122, 5.123, 5.119, 5.116, 5.114],
-                'low': [5.119, 5.117, 5.114, 5.111, 5.109],
-                'close': [5.121, 5.118, 5.115, 5.112, 5.110]
-            })
-
-            # Process indicators and generate signal
-            analysis = analyze_market(sample_ohlc_data)
+    def fetch_market_data(self):
+        """Fetches real recent 1-minute data from Yahoo Finance."""
+        print(f"Fetching real 1-minute data for {self.ticker}...")
+        data = yf.download(self.ticker, period="5d", interval="1m", progress=False)
+        
+        # Clean multi-index columns if present in newer yfinance versions
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
             
-            # Send alert if actionable signal was found
-            send_atx_signal(analysis)
+        return data.dropna()
 
-        except Exception as err:
-            print(f"[ATX Bot Error]: {err}")
+    def calculate_indicators(self, df):
+        """Calculates Moving Average Crossover and RSI."""
+        df['EMA_9'] = df['Close'].ewm(span=9, adjust=False).mean()
+        df['EMA_21'] = df['Close'].ewm(span=21, adjust=False).mean()
+        
+        # Calculate RSI
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        df['RSI'] = 100 - (100 / (1 + rs))
+        
+        return df.dropna()
 
-        # Wait 60 seconds for the next 1-minute candle
-        time.sleep(60)
+    def generate_signal(self, row, prev_row):
+        """Generates a real signal based on EMA crossover and RSI filter."""
+        # Bullish: Fast EMA crosses above Slow EMA and RSI is not overbought (< 70)
+        if prev_row['EMA_9'] <= prev_row['EMA_21'] and row['EMA_9'] > row['EMA_21'] and row['RSI'] < 70:
+            return "CALL"
+        # Bearish: Fast EMA crosses below Slow EMA and RSI is not oversold (> 30)
+        elif prev_row['EMA_9'] >= prev_row['EMA_21'] and row['EMA_9'] < row['EMA_21'] and row['RSI'] > 30:
+            return "PUT"
+        return "HOLD"
 
+    def run_backtest_simulation(self):
+        """Runs the strategy on historical data to demonstrate real win/loss ratios."""
+        df = self.fetch_market_data()
+        if df.empty:
+            print("Error: Could not retrieve market data.")
+            return
 
-if _name_ == "_main_":
-    run_atx_bot()
+        df = self.calculate_indicators(df)
+        
+        print(f"\n--- Starting Real Simulation ---")
+        print(f"Initial Balance: ${self.balance:.2f} | Payout: {self.payout_rate*100}%\n")
+
+        wins = 0
+        losses = 0
+
+        # Iterate through candles to simulate trades
+        for i in range(1, len(df) - 1):
+            prev_row = df.iloc[i-1]
+            curr_row = df.iloc[i]
+            next_row = df.iloc[i+1] # Used to check if trade won or lost
+
+            signal = self.generate_signal(curr_row, prev_row)
+
+            if signal in ["CALL", "PUT"]:
+                stake = self.balance * 0.10  # Risk 10% of current balance (compounding)
+                
+                # Determine outcome based on real price action of the next candle
+                price_went_up = next_row['Close'] > curr_row['Close']
+                
+                is_win = False
+                if signal == "CALL" and price_went_up:
+                    is_win = True
+                elif signal == "PUT" and not price_went_up:
+                    is_win = True
+
+                if is_win:
+                    profit = stake * self.payout_rate
+                    self.balance += profit
+                    wins += 1
+                    result = "WIN"
+                else:
+                    self.balance -= stake
+                    losses += 1
+                    result = "LOSS"
+
+                self.trade_history.append({
+                    "Time": curr_row.name,
+                    "Signal": signal,
+                    "Stake": round(stake, 2),
+                    "Result": result,
+                    "New Balance": round(self.balance, 2)
+                })
+
+        # Print Summary
+        total_trades = wins + losses
+        win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
+        
+        print(f"Total Trades Evaluated: {total_trades}")
+        print(f"Wins: {wins} | Losses: {losses}")
+        print(f"Real Win Rate: {win_rate:.2f}%")
+        print(f"Final Balance: ${self.balance:.2f}")
+
+if __name__ == "__main__":
+    bot = RealTradingBot(ticker="USDBRL=X", initial_balance=100.0)
+    bot.run_backtest_simulation()
